@@ -10,3 +10,13 @@ services:
       - '5432:5432'
     volumes:
       - ./db:/var/lib/postgresql/data
+  home-analyzer:
+    volumes:
+      - ./:/app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    env_file: .env
+    command: streamlit run app/main.py --server.port=8501 --server.address=0.0.0.0
