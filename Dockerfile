@@ -4,7 +4,7 @@ EXPOSE 8501
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY . .
 RUN apt-get update && apt-get install -y
 RUN mkdir -p /root/.streamlit && bash -c 'echo -e "\
                                         [general]\n\

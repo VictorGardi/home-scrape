@@ -3,20 +3,16 @@ services:
   db:
     image: postgres:15-alpine
     restart: always
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-    ports:
-      - '5432:5432'
+    env_file: .env
     volumes:
       - ./db:/var/lib/postgresql/data
+    network_mode: host
   home-analyzer:
     volumes:
       - ./:/app
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "8501:8501"
     env_file: .env
+    network_mode: host
     command: streamlit run app/main.py --server.port=8501 --server.address=0.0.0.0
