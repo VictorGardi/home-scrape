@@ -6,6 +6,7 @@ services:
     env_file: .env
     volumes:
       - ./db:/var/lib/postgresql/data
+      - ./scripts/postgres:/docker-entrypoint-initdb.d/
     network_mode: host
   home-analyzer:
     volumes:

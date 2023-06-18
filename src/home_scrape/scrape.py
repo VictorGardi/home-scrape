@@ -1,25 +1,28 @@
 """Module to scrape real estate objects from hemnet."""
 
 import logging
-from uuid import uuid4
+from typing import Union
 
-from home_scrape.sql import get_engine, get_values, get_metadata
+import pandas as pd
 import requests
-from sqlalchemy import Engine, text
-from unidecode import unidecode as ud
 from bs4 import BeautifulSoup
 from requests.exceptions import HTTPError
-import pandas as pd
+from unidecode import unidecode as ud
+
+from home_scrape.db import add_data_to_table, table_exists
+from home_scrape.sql import get_engine, get_values
 
 BASE_URL = (
     "https://www.hemnet.se/bostader?item_types%5B%5D=villa"
     "&location_ids%5B%5D=17755&location_ids%5B%5D=17754&page="
 )
 
-SCHEMA = "scrape"
-TABLE = "houses"
+SCHEMA = "houses"
+TABLE_RAW = "raw"
+TABLE_TRANSFORMED = "transformed"
 
 logging.basicConfig(level=logging.INFO)
+
 
 class RequestError(Exception):
     """Custom exception to be raised when request fails."""
@@ -65,16 +68,24 @@ def get_soup(url: str) -> BeautifulSoup:
     except RequestError as exc:
         raise RuntimeError from exc
 
+
 def get_table_info(soup: BeautifulSoup, class_name: str) -> dict:
+    """Get information from hemnet table and collect into a dict."""
     keys, values = [], []
     for dl in soup.findAll("dl", {"class": class_name}):
         for dt in dl.findAll("dt"):
             keys.append(dt.text.strip())
         for dd in dl.findAll("dd"):
-            values.append(ud(dd.text.strip()).replace(" m2", "").replace(" rum", "").replace(" kr/ar", ""))
+            values.append(
+                ud(dd.text.strip())
+                .replace(" m2", "")
+                .replace(" rum", "")
+                .replace(" kr/ar", "")
+            )
     info = dict(zip(keys, values))
     info.pop("", None)
     return info
+
 
 def get_house_information(soup: BeautifulSoup) -> dict:
     """Get information about a house given soup.
@@ -85,8 +96,15 @@ def get_house_information(soup: BeautifulSoup) -> dict:
     Returns:
         Dictionary with KPI's for the house
     """
-    price = ud(soup.find("div", attrs={"class": "property-info__price-container"}).p.text).replace(" kr", "")
-    living_area = ud(soup.find( "div", attrs={ "class": "property-attributes-table__row qa-living-area-attribute" },).dd.text).replace(" m2", "")
+    price = ud(
+        soup.find("div", attrs={"class": "property-info__price-container"}).p.text
+    ).replace(" kr", "")
+    living_area = ud(
+        soup.find(
+            "div",
+            attrs={"class": "property-attributes-table__row qa-living-area-attribute"},
+        ).dd.text
+    ).replace(" m2", "")
     info = get_table_info(soup, class_name="property-attributes-table__area")
 
     address = soup.find("div", attrs={"class": "property-address"}).h1.text
@@ -95,26 +113,29 @@ def get_house_information(soup: BeautifulSoup) -> dict:
         city, region = city_region.split(", ")
     except ValueError:
         city, region = None, city_region
-    info.update({
+    info.update(
+        {
             "stad": city,
             "region": region,
             "adress": address,
-            "pris": price ,
+            "pris": price,
             "Boarea": living_area,
-        })
+        }
+    )
 
     return info
 
-def main(n_pages: int) -> None:
+
+def extract(n_pages: int) -> None:
     """Scraping hemnet."""
-    engine = get_engine() 
-    if SCHEMA + "." + TABLE in get_metadata(engine, SCHEMA).tables:
-        logging.info(f"Table {SCHEMA + '.' + TABLE} exists, adding data..")
-        urls = get_values(engine, TABLE, schema=SCHEMA, columns="url")
-    else:
-        logging.info(f"Table {SCHEMA + '.' + TABLE} does not exist, creating..")
-        urls = []
+    engine = get_engine()
+    urls = (
+        get_values(engine, TABLE_RAW, schema=SCHEMA, columns="url")
+        if table_exists(engine, SCHEMA, TABLE_RAW)
+        else []
+    )
     for page in range(n_pages):
+        logging.info(f"Scraping houses from page {page}")
         items = []
         url = BASE_URL + str(page)
         try:
@@ -125,9 +146,7 @@ def main(n_pages: int) -> None:
         houses = soup.find_all(
             "li", attrs={"class": "normal-results__hit js-normal-list-item"}
         )
-        for i, house in enumerate(houses):
-            if i % 10 == 0:
-                logging.info(f"Done with scraping of {i*(page+1)} houses")
+        for house in houses:
             try:
                 house_url = house.find(
                     "a", attrs={"class": "js-listing-card-link listing-card"}
@@ -150,7 +169,9 @@ def main(n_pages: int) -> None:
                 info.update({"url": house_url})
                 items.append(info)
             except Exception as e:
-                logging.warning(f"Fetching information for url: {url} failed due to {e}")
+                logging.warning(
+                    f"Fetching information for url: {url} failed due to {e}"
+                )
                 continue
         if not items:
             continue
@@ -159,29 +180,59 @@ def main(n_pages: int) -> None:
             df.columns = df.columns.str.lower()
         except Exception as e:
             print(e)
-            breakpoint()
-        if SCHEMA + "." + TABLE in get_metadata(engine, SCHEMA).tables:
-            df = update_columns_in_table(engine, df, table=TABLE, schema=SCHEMA)
-        df.to_sql(TABLE, engine, schema=SCHEMA, if_exists="append")
+        add_data_to_table(engine, df, TABLE_RAW, SCHEMA)
 
 
-def update_columns_in_table(engine: Engine, df: pd.DataFrame, table: str, schema: str) -> pd.DataFrame:
-    with engine.begin() as connection:
-        db_columns = pd.read_sql_query(f"SELECT * FROM {schema + '.' + table} limit 1", connection).columns.str.lower()
-    new_columns = set(df.columns) - set(db_columns)
-    if not new_columns:
-        return df
-    query = ''   
-    for column in new_columns:
-        #old_col = column
-        #if " " in column:
-        #    column = column.replace(" ", "_")
-        #    df.rename(columns={old_col: column})
-        query += f"ALTER TABLE {schema + '.' + table} ADD COLUMN {column} text;" 
-    with engine.begin() as connection:
-        _ = connection.execute(text(query))
+def transform(df: pd.DataFrame) -> pd.DataFrame:
+    """Transform data into something usable."""
+    df.drop(columns=["index"], inplace=True)
+    df["antal rum"] = df["antal rum"].str.replace(",", ".")
+    df["pris"] = df["pris"].str.replace(" ", "")
+    df.uteplats = _str_col_to_bool(df.uteplats, "ja")
+    df.balkong = _str_col_to_bool(df.balkong, "ja")
     return df
 
 
+def pipeline() -> None:
+    """Pipeline to run the transformation of the data."""
+    engine = get_engine()
+    urls_raw = get_values(engine, TABLE_RAW, columns="url", schema=SCHEMA)
+    urls_transformed = (
+        get_values(get_engine(), TABLE_TRANSFORMED, columns="url", schema=SCHEMA)
+        if table_exists(engine, TABLE_TRANSFORMED, SCHEMA)
+        else []
+    )
+    new_urls = list(set(urls_raw) - set(urls_transformed))
+    df = pd.DataFrame(
+        get_values(
+            engine, TABLE_RAW, schema=SCHEMA, where=f"url IN {_list_to_tuple(new_urls)}"
+        )
+    )
+    df = transform(df)
+    add_data_to_table(engine, df, TABLE_TRANSFORMED, SCHEMA)
+
+
+def _str_col_to_bool(col: pd.Series, qry: str) -> pd.Series:
+    """Convert pandas str column to bool given a qry.
+
+    Args:
+        col (pd.Series): str column to convert to bool
+        qry (str): string value that should be converted to True.
+                   All other values will be set to False. Note that this
+                   functionality is NOT case-sensitive. All values in column,
+                   and qry, will be converted to lower case before converting.
+
+    Returns:
+        pd.Series: bool column.
+    """
+    return col.str.lower() == qry.lower()
+
+
+def _list_to_tuple(ls: list) -> Union[tuple, str]:
+    """Convert list to sql friendly tuple to use in IN statements."""
+    return tuple(ls) if len(ls) > 1 else "('" + str(ls[0]) + "')"
+
+
 if __name__ == "__main__":
-    main(n_pages=30)
+    # extract(n_pages=30)
+    pipeline()

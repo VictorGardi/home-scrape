@@ -1,10 +1,10 @@
 import pandas as pd
-import pandas_profiling
 import streamlit as st
-from sklearn.linear_model import LinearRegression
-from streamlit_pandas_profiling import st_profile_report
 
 from home_scrape.sql import get_engine, get_values
+
+# from sklearn.linear_model import LinearRegression
+
 
 SCHEMA = "scrape"
 TABLE = "houses"
@@ -13,12 +13,7 @@ MODELS = ["linear regression", "Ridge regression"]
 
 # @st.cache_data
 def fetch_data() -> pd.DataFrame:
-    vals = get_values(get_engine(), table=TABLE, schema=SCHEMA)
-    df = pd.DataFrame(vals)
-    df.drop(columns=["index"], inplace=True)
-    df["antal rum"] = df["antal rum"].str.replace(",", ".")
-    df["pris"] = df["pris"].str.replace(" ", "")
-    return df
+    return pd.DataFrame(get_values(get_engine(), table=TABLE, schema=SCHEMA))
 
 
 def main():
@@ -70,8 +65,8 @@ def main():
     #    st.pyplot(ax.figure)
     # st.dataframe(df)
 
-    X = df[feature_cols]
-    y = df[target]
+    # X = df[feature_cols]
+    # y = df[target]
 
     st.header("Train models")
     models = st.multiselect("Choose models to use", MODELS)
